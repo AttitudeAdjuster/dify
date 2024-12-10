@@ -193,3 +193,9 @@ api/.vscode
 
 .idea/
 .vscode
+
+# logos
+web/public/logo/*
+
+# sandbox customisation
+docker/volumes/sandbox/dependencies/python-requirements.txt
