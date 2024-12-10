@@ -1,7 +1,7 @@
 import logging
 import threading
 import uuid
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from typing import Any, Literal, Union, overload
 
 from flask import Flask, current_app
@@ -22,7 +22,6 @@ from core.ops.ops_trace_manager import TraceQueueManager
 from extensions.ext_database import db
 from factories import file_factory
 from models import Account, App, EndUser, Message
-from models.enums import CreatedByRole
 from services.errors.app import MoreLikeThisDisabledError
 from services.errors.message import MessageNotExistsError
 
@@ -35,9 +34,9 @@ class CompletionAppGenerator(MessageBasedAppGenerator):
         self,
         app_model: App,
         user: Union[Account, EndUser],
-        args: dict,
+        args: Mapping[str, Any],
         invoke_from: InvokeFrom,
-        stream: Literal[True] = True,
+        streaming: Literal[True],
     ) -> Generator[str, None, None]: ...
 
     @overload
@@ -45,14 +44,29 @@ class CompletionAppGenerator(MessageBasedAppGenerator):
         self,
         app_model: App,
         user: Union[Account, EndUser],
-        args: dict,
+        args: Mapping[str, Any],
         invoke_from: InvokeFrom,
-        stream: Literal[False] = False,
-    ) -> dict: ...
+        streaming: Literal[False],
+    ) -> Mapping[str, Any]: ...
+
+    @overload
+    def generate(
+        self,
+        app_model: App,
+        user: Union[Account, EndUser],
+        args: Mapping[str, Any],
+        invoke_from: InvokeFrom,
+        streaming: bool,
+    ) -> Mapping[str, Any] | Generator[str, None, None]: ...
 
     def generate(
-        self, app_model: App, user: Union[Account, EndUser], args: Any, invoke_from: InvokeFrom, stream: bool = True
-    ) -> Union[dict, Generator[str, None, None]]:
+        self,
+        app_model: App,
+        user: Union[Account, EndUser],
+        args: Mapping[str, Any],
+        invoke_from: InvokeFrom,
+        streaming: bool = True,
+    ):
         """
         Generate App response.
 
@@ -88,8 +102,6 @@ class CompletionAppGenerator(MessageBasedAppGenerator):
                 tenant_id=app_model.tenant_id, config=args.get("model_config")
             )
 
-        role = CreatedByRole.ACCOUNT if isinstance(user, Account) else CreatedByRole.END_USER
-
         # parse files
         files = args["files"] if args.get("files") else []
         file_extra_config = FileUploadConfigManager.convert(override_model_config_dict or app_model_config.to_dict())
@@ -97,8 +109,6 @@ class CompletionAppGenerator(MessageBasedAppGenerator):
             file_objs = file_factory.build_from_mappings(
                 mappings=files,
                 tenant_id=app_model.tenant_id,
-                user_id=user.id,
-                role=role,
                 config=file_extra_config,
             )
         else:
@@ -110,7 +120,6 @@ class CompletionAppGenerator(MessageBasedAppGenerator):
         )
 
         # get tracing instance
-        user_id = user.id if isinstance(user, Account) else user.session_id
         trace_manager = TraceQueueManager(app_model.id)
 
         # init application generate entity
@@ -118,11 +127,14 @@ class CompletionAppGenerator(MessageBasedAppGenerator):
             task_id=str(uuid.uuid4()),
             app_config=app_config,
             model_conf=ModelConfigConverter.convert(app_config),
-            inputs=self._prepare_user_inputs(user_inputs=inputs, app_config=app_config, user_id=user.id, role=role),
+            file_upload_config=file_extra_config,
+            inputs=self._prepare_user_inputs(
+                user_inputs=inputs, variables=app_config.variables, tenant_id=app_model.tenant_id
+            ),
             query=query,
             files=file_objs,
             user_id=user.id,
-            stream=stream,
+            stream=streaming,
             invoke_from=invoke_from,
             extras=extras,
             trace_manager=trace_manager,
@@ -161,7 +173,7 @@ class CompletionAppGenerator(MessageBasedAppGenerator):
             conversation=conversation,
             message=message,
             user=user,
-            stream=stream,
+            stream=streaming,
         )
 
         return CompletionAppGenerateResponseConverter.convert(response=response, invoke_from=invoke_from)
@@ -259,14 +271,11 @@ class CompletionAppGenerator(MessageBasedAppGenerator):
         override_model_config_dict["model"] = model_dict
 
         # parse files
-        role = CreatedByRole.ACCOUNT if isinstance(user, Account) else CreatedByRole.END_USER
         file_extra_config = FileUploadConfigManager.convert(override_model_config_dict)
         if file_extra_config:
             file_objs = file_factory.build_from_mappings(
                 mappings=message.message_files,
                 tenant_id=app_model.tenant_id,
-                user_id=user.id,
-                role=role,
                 config=file_extra_config,
             )
         else:

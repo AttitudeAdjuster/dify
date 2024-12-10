@@ -3,12 +3,12 @@ from datetime import timedelta
 import pytz
 from celery import Celery, Task
 from celery.schedules import crontab
-from flask import Flask
 
 from configs import dify_config
+from dify_app import DifyApp
 
 
-def init_app(app: Flask) -> Celery:
+def init_app(app: DifyApp) -> Celery:
     class FlaskTask(Task):
         def __call__(self, *args: object, **kwargs: object) -> object:
             with app.app_context():
@@ -46,7 +46,6 @@ def init_app(app: Flask) -> Celery:
         broker_connection_retry_on_startup=True,
         worker_log_format=dify_config.LOG_FORMAT,
         worker_task_log_format=dify_config.LOG_FORMAT,
-        worker_logfile=dify_config.LOG_FILE,
         worker_hijack_root_logger=False,
         timezone=pytz.timezone(dify_config.LOG_TZ),
     )
@@ -54,6 +53,11 @@ def init_app(app: Flask) -> Celery:
     if dify_config.BROKER_USE_SSL:
         celery_app.conf.update(
             broker_use_ssl=ssl_options,  # Add the SSL options to the broker configuration
+        )
+
+    if dify_config.LOG_FILE:
+        celery_app.conf.update(
+            worker_logfile=dify_config.LOG_FILE,
         )
 
     celery_app.set_default()
@@ -64,6 +68,7 @@ def init_app(app: Flask) -> Celery:
         "schedule.clean_unused_datasets_task",
         "schedule.create_tidb_serverless_task",
         "schedule.update_tidb_serverless_status_task",
+        "schedule.clean_messages",
     ]
     day = dify_config.CELERY_BEAT_SCHEDULER_TIME
     beat_schedule = {
@@ -81,7 +86,11 @@ def init_app(app: Flask) -> Celery:
         },
         "update_tidb_serverless_status_task": {
             "task": "schedule.update_tidb_serverless_status_task.update_tidb_serverless_status_task",
-            "schedule": crontab(minute="30", hour="*"),
+            "schedule": timedelta(minutes=10),
+        },
+        "clean_messages": {
+            "task": "schedule.clean_messages.clean_messages",
+            "schedule": timedelta(days=day),
         },
     }
     celery_app.conf.update(beat_schedule=beat_schedule, imports=imports)
